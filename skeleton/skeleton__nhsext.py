@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # extensions/skeleton/skeleton__nhsext.py
+# This is a skeleton/example extension for nhentai-scraper. It is also use as the default extension if none is specified.
+# ENSURE THAT THIS FILE IS THE *EXACT SAME* IN BOTH THE NHENTAI-SCRAPER REPO AND THE NHENTAI-SCRAPER-EXTENSIONS REPO.
 
 import os, subprocess, json
 from core.logger import logger
@@ -8,11 +10,15 @@ from core.config import update_env
 # Global variable for download path, leave empty initially
 extension_download_path = ""
 
+def update_extension_download_path(PATH):
+    global extension_download_path
+    extension_download_path = PATH
+    update_env("EXTENSION_DOWNLOAD_PATH", extension_download_path)
+
 # Hook for pre-download functionality. Set download path to extension's desired download path.
 def pre_download_hook(config, gallery_list):
-    global extension_download_path
-    extension_download_path = "./downloads_skeleton"  # example path
-    update_env("EXTENSION_DOWNLOAD_PATH", extension_download_path)
+    update_extension_download_path("./downloads_skeleton")
+    
     logger.info("[*] Skeleton extension: pre-download hook called")
     return gallery_list
 

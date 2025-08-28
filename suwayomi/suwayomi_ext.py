@@ -27,6 +27,7 @@ def pre_download_hook(config_dict, gallery_list):
     global extension_download_path
     extension_download_path = "/opt/suwayomi/local"
     update_env("EXTENSION_DOWNLOAD_PATH", extension_download_path)
+    
     logger.info(f"[*] Suwayomi extension: Pre-download hook called")
     return gallery_list
 
