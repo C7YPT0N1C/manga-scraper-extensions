@@ -107,6 +107,10 @@ WantedBy=multi-user.target
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "enable", "--now", "suwayomi-server"], check=True)
     logger.info("[+] Suwayomi systemd service created and started")
+    
+    print("")
+    print("Suwayomi Web: http://$IP:4567/")
+    print("Suwayomi GraphQL: http://$IP:4567/api/graphql")
 
 def uninstall_extension():
     global extension_download_path
