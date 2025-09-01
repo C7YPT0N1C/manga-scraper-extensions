@@ -1,128 +1,213 @@
 #!/usr/bin/env python3
-# extensions/suwayomi/suwayomi__nhsext.py
+# extensions/suwayomi/suwayomi.py
+# ENSURE THAT THIS FILE IS THE *EXACT SAME* IN BOTH THE NHENTAI-SCRAPER REPO AND THE NHENTAI-SCRAPER-EXTENSIONS REPO.
+# PLEASE UPDATE THIS FILE IN THE NHENTAI-SCRAPER REPO FIRST, THEN COPY IT OVER TO THE NHENTAI-SCRAPER-EXTENSIONS REPO.
 
-import os, subprocess, json
-from core.logger import logger
-from core.config import update_env, config
+import os, time, subprocess, json, requests
 
-# Global variable for download path, leave empty initially
-extension_download_path = ""
+from nhscraper.core.config import *
+from nhscraper.core.fetchers import get_meta_tags, safe_name, clean_title
 
-"""
-Suwayomi metadata (details.json)format:
+####################################################################################################################
+# Global variables
+####################################################################################################################
+EXTENSION_NAME = "suwayomi" # Must be fully lowercase
 
-{
-  "title": "AUTHOR_NAME",
-  "author": "AUTHOR_NAME",
-  "artist": "AUTHOR_NAME",
-  "description": "An archive of AUTHOR_NAME's works.",
-  "genre": ["tags_here"],
-  "status": "1",
-  "_status values": ["0=Unknown","1=Ongoing","2=Completed","3=Licensed"]
-}
-"""
+LOCAL_MANIFEST_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "local_manifest.json"
+)
 
-# Hook for pre-download functionality. Set download path to extension's desired download path.
-def pre_download_hook(config_dict, gallery_list):
-    global extension_download_path
-    extension_download_path = "/opt/suwayomi/local"
-    update_env("EXTENSION_DOWNLOAD_PATH", extension_download_path)
-    
-    logger.info(f"[*] Suwayomi extension: Pre-download hook called")
-    return gallery_list
+with open(os.path.abspath(LOCAL_MANIFEST_PATH), "r", encoding="utf-8") as f:
+    manifest = json.load(f)
 
-# Hook for functionality during download
-def during_download_hook(config_dict, gallery_id, gallery_metadata):
-    logger.info(f"[*] Suwayomi extension: During-download hook for gallery {gallery_id}")
+for ext in manifest.get("extensions", []):
+    if ext.get("name") == EXTENSION_NAME:
+        DEDICATED_DOWNLOAD_PATH = ext.get("image_download_path")
+        break
+# Optional fallback
+if DEDICATED_DOWNLOAD_PATH is None: # Default download folder here.
+    DEDICATED_DOWNLOAD_PATH = "/opt/suwayomi-server/local/"
 
-# Hook for functionality after each gallery download
-def after_gallery_download(meta: dict):
-    global extension_download_path
-    artist = meta["artists"][0] if meta.get("artists") else "Unknown"
-    details = {
-        "title": artist,
-        "author": artist,
-        "artist": artist,
-        "description": f"An archive of {artist}'s works.",
-        "genre": meta.get("tags", []),
-        "status": "1",
-    }
+SUBFOLDER_STRUCTURE = ["artist", "title"] # SUBDIR_1, SUBDIR_2, etc
 
-    # Create folders
-    gallery_folder = os.path.join(extension_download_path, artist, f"{meta['id']}")
-    os.makedirs(gallery_folder, exist_ok=True)
-
-    # Save details.json
-    details_file = os.path.join(gallery_folder, "details.json")
-    if config["DRY_RUN"]:
-        logger.info(f"[+] Dry-run: Would save details.json to {details_file}")
-    else:
-        with open(details_file, "w", encoding="utf-8") as f:
-            json.dump(details, f, ensure_ascii=False, indent=2)
-        logger.info(f"[+] Suwayomi metadata saved for gallery {meta['id']}")
-
-# Hook for functionality after all downloads are complete
-def after_all_downloads(all_meta: list):
-    logger.info(f"[*] Suwayomi extension: batch of {len(all_meta)} galleries downloaded")
-
-# Hook for post-download functionality. Reset download path.
-def post_download_hook(config_dict, completed_galleries):
-    global extension_download_path
-    extension_download_path = ""  # Reset after downloads
-    update_env("EXTENSION_DOWNLOAD_PATH", "")
-    logger.info(f"[*] Suwayomi extension: Post-download hook called")
-
-# ------------------------------
-# Install / Uninstall
-# ------------------------------
+####################################################################################################################
+# CORE
+####################################################################################################################
 def install_extension():
-    global extension_download_path
-    SUWAYOMI_DIR = "/opt/suwayomi/local"
-    extension_download_path = SUWAYOMI_DIR
-    os.makedirs(extension_download_path, exist_ok=True)
-    update_env("EXTENSION_DOWNLOAD_PATH", extension_download_path)
-    logger.info(f"[+] Suwayomi extension installed at {extension_download_path}")
-
-    # Systemd service
-    service_file = "/etc/systemd/system/suwayomi-server.service"
-    service_content = f"""[Unit]
-Description=Suwayomi Server
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory={SUWAYOMI_DIR}
-ExecStart={SUWAYOMI_DIR}/suwayomi-server
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-"""
-    with open(service_file, "w") as f:
-        f.write(service_content)
-    subprocess.run(["systemctl", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "enable", "--now", "suwayomi-server"], check=True)
-    logger.info("[+] Suwayomi systemd service created and started")
+    os.makedirs(DEDICATED_DOWNLOAD_PATH, exist_ok=True)
     
-    print("")
-    print("Suwayomi Web: http://$IP:4567/")
-    print("Suwayomi GraphQL: http://$IP:4567/api/graphql")
+    log_clarification()
+    logger.info(f"Extension: {EXTENSION_NAME}: Installed.")
 
 def uninstall_extension():
-    global extension_download_path
-    SUWAYOMI_DIR = "/opt/suwayomi/local"
+    global DEDICATED_DOWNLOAD_PATH
     try:
-        extension_download_path = ""
-        update_env("EXTENSION_DOWNLOAD_PATH", "")
-        service_file = "/etc/systemd/system/suwayomi-server.service"
-        if os.path.exists(service_file):
-            os.remove(service_file)
-            subprocess.run(["systemctl", "daemon-reload"], check=True)
-            logger.info("[+] Suwayomi systemd service removed")
-        logger.info("[+] Suwayomi extension uninstalled")
+        if os.path.exists(DEDICATED_DOWNLOAD_PATH):
+            os.rmdir(DEDICATED_DOWNLOAD_PATH)
+        
+        log_clarification()
+        logger.info(f"Extension: {EXTENSION_NAME}: Uninstalled")
     except Exception as e:
-        logger.error(f"[!] Failed to uninstall Suwayomi extension: {e}")
+        log_clarification()
+        logger.error(f"Extension: {EXTENSION_NAME}: Failed to uninstall: {e}")
+
+def update_extension_download_path():
+    log_clarification()
+    logger.info(f"Extension: {EXTENSION_NAME}: Ready.")
+    logger.debug(f"Extension: {EXTENSION_NAME}: Debugging started.")
+    update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH)
+
+def build_gallery_subfolders(meta):
+    """Return a dict of possible variables to use in folder naming."""
+    return {
+        "artist": (get_meta_tags(meta, "artist") or ["Unknown Artist"])[0],
+        "title": clean_title(meta),
+        "id": str(meta.get("id", "unknown")),
+        "language": (get_meta_tags(meta, "language") or ["Unknown"])[0],
+    }
+
+####################################################################################################################
+# CUSTOM HOOKS (Create your custom hooks here, add them into the corresponding CORE HOOK)
+####################################################################################################################
+
+def remove_empty_directories(RemoveEmptyArtistFolder: bool = True):
+    # Remove empty folders inside DEDICATED_DOWNLOAD_PATH without deleting the root folder itself.
+    
+    global DEDICATED_DOWNLOAD_PATH
+
+    # Safety check
+    if not DEDICATED_DOWNLOAD_PATH or not os.path.isdir(DEDICATED_DOWNLOAD_PATH):
+        logger.debug("No valid DEDICATED_DOWNLOAD_PATH set, skipping cleanup.")
+        return
+
+    if RemoveEmptyArtistFolder:  # Remove empty subdirectories, deepest first. Does not delete DEDICATED_DOWNLOAD_PATH.
+        for dirpath, dirnames, filenames in os.walk(DEDICATED_DOWNLOAD_PATH, topdown=False):
+            if dirpath == DEDICATED_DOWNLOAD_PATH:
+                continue  # Skip root folder
+            try:
+                if not os.listdir(dirpath):  # directory is empty (no files, no subdirs)
+                    os.rmdir(dirpath)
+                    logger.info(f"Removed empty directory: {dirpath}")
+            except Exception as e:
+                logger.warning(f"Could not remove empty directory: {dirpath}: {e}")
+    
+    else:  # Remove empty subdirectories, deepest only
+        for dirpath, dirnames, filenames in os.walk(DEDICATED_DOWNLOAD_PATH, topdown=False):
+            if dirpath == DEDICATED_DOWNLOAD_PATH:
+                continue  # Skip root folder
+            if not dirnames and not filenames:
+                try:
+                    os.rmdir(dirpath)
+                    logger.info(f"Removed empty directory: {dirpath}")
+                except Exception as e:
+                    logger.warning(f"Could not remove empty directory: {dirpath}: {e}")
+
+    logger.info(f"Removed empty directories.")
+    
+    DEDICATED_DOWNLOAD_PATH = ""  # Reset after download batch
+    update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH)
+
+# Hook for testing functionality. Use active_extension.test_hook(ARGS) in downloader.
+def test_hook():
+    log_clarification()
+    logger.debug(f"Extension: {EXTENSION_NAME}: Test hook called.")
+
+####################################################################################################################
+# CORE HOOKS (Please add too the functions, try not to change or remove anything)
+####################################################################################################################
+
+# Hook for pre-run functionality. Use active_extension.pre_run_hook(ARGS) in downloader.
+def pre_run_hook(config, gallery_list):
+    update_extension_download_path()
+    
+    log_clarification()
+    logger.debug(f"Extension: {EXTENSION_NAME}: Pre-run hook called.")
+    return gallery_list
+
+# Hook for downloading images. Use active_extension.download_images_hook(ARGS) in downloader.
+def download_images_hook(gallery, page, urls, path, session, pbar=None, artist=None, retries=None):
+    """
+    Downloads an image from one of the provided URLs to the given path.
+    Tries mirrors in order until one succeeds, with retries per mirror.
+    Updates tqdm progress bar with current artist.
+    """
+    if not urls:
+        logger.warning(f"Gallery {gallery}: Page {page}: No URLs, skipping")
+        if pbar and artist:
+            pbar.set_postfix_str(f"Skipped artist: {artist}")
+        return False
+
+    if retries is None:
+        retries = config.get("MAX_RETRIES", DEFAULT_MAX_RETRIES)
+
+    if os.path.exists(path):
+        logger.debug(f"Already exists, skipping: {path}")
+        if pbar and artist:
+            pbar.set_postfix_str(f"Artist: {artist}")
+        return True
+
+    if config.get("DRY_RUN", DEFAULT_DRY_RUN):
+        logger.info(f"[DRY-RUN] Gallery {gallery}: Would download {urls[0]} -> {path}")
+        if pbar and artist:
+            pbar.set_postfix_str(f"Artist: {artist}")
+        return True
+
+    if not isinstance(session, requests.Session):
+        session = requests.Session()
+
+    # Loop through mirrors
+    for url in urls:
+        for attempt in range(1, retries + 1):
+            try:
+                r = session.get(url, timeout=30, stream=True)
+                if r.status_code == 429:
+                    wait = 2 ** attempt
+                    logger.warning(f"429 rate limit hit for {url}, waiting {wait}s")
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+
+                logger.debug(f"Downloaded Gallery {gallery}: Page {page} -> {path}")
+                if pbar and artist:
+                    pbar.set_postfix_str(f"Artist: {artist}")
+                return True
+
+            except Exception as e:
+                wait = 2 ** attempt
+                log_clarification()
+                logger.warning(f"Gallery {gallery}: Page {page}: Mirror {url}, attempt {attempt} failed: {e}, retrying in {wait}s")
+                time.sleep(wait)
+
+        # If all retries for this mirror failed, move to next mirror
+        logger.warning(f"Gallery {gallery}: Page {page}: Mirror {url} failed after {retries} attempts, trying next mirror")
+
+    # If no mirrors succeeded
+    log_clarification()
+    logger.error(f"Gallery {gallery}: Page {page}: All mirrors failed after {retries} retries each: {urls}")
+    if pbar and artist:
+        pbar.set_postfix_str(f"Failed artist: {artist}")
+    return False
+
+# Hook for functionality during download. Use active_extension.during_gallery_download_hook(ARGS) in downloader.
+def during_gallery_download_hook(config, gallery_id, gallery_metadata):
+    log_clarification()
+    logger.debug(f"Extension: {EXTENSION_NAME}: During-download hook called: Gallery: {gallery_id}")
+
+# Hook for functionality after each gallery download. Use active_extension.after_gallery_download_hook(ARGS) in downloader.
+def after_gallery_download_hook(meta: dict):
+    log_clarification()
+    logger.debug(f"Extension: {EXTENSION_NAME}: Post-Gallery Download hook called: Gallery: {meta['id']}: Downloaded.")
+
+# Hook for post-run functionality. Reset download path. Use active_extension.post_run_hook(ARGS) in downloader.
+def post_run_hook(config, completed_galleries):
+    log_clarification()
+    logger.debug(f"Extension: {EXTENSION_NAME}: Post-run hook called.")
+
+    log_clarification()
+    remove_empty_directories(True)
