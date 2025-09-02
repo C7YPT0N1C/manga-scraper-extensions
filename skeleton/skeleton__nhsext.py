@@ -14,6 +14,7 @@ from nhscraper.core.fetchers import get_meta_tags, safe_name, clean_title
 # Global variables
 ####################################################################################################################
 EXTENSION_NAME = "skeleton" # Must be fully lowercase
+DEDICATED_DOWNLOAD_PATH = "/opt/nhentai-scraper/downloads/" # TEST
 
 LOCAL_MANIFEST_PATH = os.path.join(
     os.path.dirname(__file__), "..", "local_manifest.json"
@@ -36,10 +37,20 @@ SUBFOLDER_STRUCTURE = ["artist", "title"] # SUBDIR_1, SUBDIR_2, etc
 # CORE
 ####################################################################################################################
 def install_extension():
-    os.makedirs(DEDICATED_DOWNLOAD_PATH, exist_ok=True)
-    
-    log_clarification()
-    logger.info(f"Extension: {EXTENSION_NAME}: Installed.")
+    """
+    Install the extension and ensure the dedicated download path exists.
+    """
+    global DEDICATED_DOWNLOAD_PATH
+
+    if not DEDICATED_DOWNLOAD_PATH:
+        # Fallback in case manifest didn't define it
+        DEDICATED_DOWNLOAD_PATH = "/opt/nhentai-scraper/downloads/"
+
+    try:
+        os.makedirs(DEDICATED_DOWNLOAD_PATH, exist_ok=True)
+        logger.info(f"Extension: {EXTENSION_NAME}: Installed. Download path ready at '{DEDICATED_DOWNLOAD_PATH}'.")
+    except Exception as e:
+        logger.error(f"Extension: {EXTENSION_NAME}: Failed to create download path '{DEDICATED_DOWNLOAD_PATH}': {e}")
 
 def uninstall_extension():
     global DEDICATED_DOWNLOAD_PATH
@@ -47,14 +58,18 @@ def uninstall_extension():
         if os.path.exists(DEDICATED_DOWNLOAD_PATH):
             os.rmdir(DEDICATED_DOWNLOAD_PATH)
         
-        log_clarification()
         logger.info(f"Extension: {EXTENSION_NAME}: Uninstalled")
     except Exception as e:
-        log_clarification()
         logger.error(f"Extension: {EXTENSION_NAME}: Failed to uninstall: {e}")
 
 def update_extension_download_path():
     log_clarification()
+    try:
+        os.makedirs(DEDICATED_DOWNLOAD_PATH, exist_ok=True)
+        logger.info(f"Extension: {EXTENSION_NAME}: Download path ready at '{DEDICATED_DOWNLOAD_PATH}'.")
+    except Exception as e:
+        logger.error(f"Extension: {EXTENSION_NAME}: Failed to create download path '{DEDICATED_DOWNLOAD_PATH}': {e}")
+    
     logger.info(f"Extension: {EXTENSION_NAME}: Ready.")
     logger.debug(f"Extension: {EXTENSION_NAME}: Debugging started.")
     update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH)
@@ -103,9 +118,9 @@ def remove_empty_directories(RemoveEmptyArtistFolder: bool = True):
                     logger.info(f"Removed empty directory: {dirpath}")
                 except Exception as e:
                     logger.warning(f"Could not remove empty directory: {dirpath}: {e}")
-    
-    logger.info(f"Removed empty directories.")
 
+    logger.info(f"Removed empty directories.")
+    
     DEDICATED_DOWNLOAD_PATH = ""  # Reset after download batch
     update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH)
 
