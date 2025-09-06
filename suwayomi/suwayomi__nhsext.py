@@ -60,13 +60,16 @@ def return_gallery_metas(meta):
     
     id = str(meta.get("id", "Unknown ID"))
     
+    full_title = f"({id}) {title}"
+    
     language = get_meta_tags(f"{EXTENSION_NAME}: Return_gallery_metas", meta, "language") or ["Unknown Language"]
     
     log_clarification()
 
     return {
         "creator": creators,
-        "title": title,
+        "title": full_title,
+        "short_title": title,
         "id": id,
         "language": language,
     }
@@ -346,35 +349,37 @@ def pre_run_hook(gallery_list):
     
     log_clarification()
     log(f"Extension: {EXTENSION_NAME}: Pre-run hook called.")
-    log_clarification()
-    log("") # <-------- ADD STUFF IN PLACE OF THIS
+    #log_clarification()
+    #log("") # <-------- ADD STUFF IN PLACE OF THIS
     return gallery_list
 
 def pre_gallery_download_hook(gallery_id):
     log_clarification()
     log(f"Extension: {EXTENSION_NAME}: Pre-download hook called: Gallery: {gallery_id}")
-    log_clarification()
-    log("") # <-------- ADD STUFF IN PLACE OF THIS
+    #log_clarification()
+    #log("") # <-------- ADD STUFF IN PLACE OF THIS
 
 # Hook for functionality during download. Use active_extension.during_gallery_download_hook(ARGS) in downloader.
 def during_gallery_download_hook(gallery_id):
     log_clarification()
     log(f"Extension: {EXTENSION_NAME}: During-download hook called: Gallery: {gallery_id}")
-    log_clarification()
-    log("") # <-------- ADD STUFF IN PLACE OF THIS
+    #log_clarification()
+    #log("") # <-------- ADD STUFF IN PLACE OF THIS
 
-# Hook for functionality after each gallery download. Use active_extension.after_gallery_download_hook(ARGS) in downloader.
-def after_gallery_download_hook(meta: dict, gallery_id):
+# Hook for functionality after each completed gallery download. Use active_extension.after_completed_gallery_download_hook(ARGS) in downloader.
+def after_completed_gallery_download_hook(meta: dict, gallery_id):
     log_clarification()
-    log(f"Extension: {EXTENSION_NAME}: Post-Gallery Download hook called: Gallery: {meta['id']}: Downloaded.")
-    log_clarification()
-    # Determine creator folder
-    creators = meta.get("artist") or meta.get("group") or ["Unknown Creator"]
-    creator_name = safe_name(creators[0])
+    log(f"Extension: {EXTENSION_NAME}: Post-Completed Gallery Download hook called: Gallery: {meta['id']}: Downloaded.")
+    
+    # Use unified metadata extraction
+    gallery_meta = return_gallery_metas(meta)
+
+    # Use first creator (artist/group), fallback handled in return_gallery_metas
+    creator_name = safe_name(gallery_meta["creator"][0])
     creator_folder = os.path.join(DEDICATED_DOWNLOAD_PATH, creator_name)
 
     details_file = os.path.join(creator_folder, "details.json")
-    top_genres_file = os.path.join(creator_folder, "top_10_genres.json")
+    top_genres_file = os.path.join(creator_folder, "most_popular_genres.json")
     os.makedirs(os.path.dirname(top_genres_file), exist_ok=True)
 
     # Load existing details.json or create default
@@ -392,14 +397,21 @@ def after_gallery_download_hook(meta: dict, gallery_id):
             "_status values": ["0 = Unknown", "1 = Ongoing", "2 = Completed", "3 = Licensed"]
         }
 
-    # Update title and description from current gallery
-    gallery_title = clean_title(meta)
-    details["title"] = gallery_title
-    details["description"] = f"Latest Doujinshi: {gallery_id} {gallery_title}"
+    # Update title and description from unified metadata
+    details["title"] = creator_name
+    details["author"] = creator_name
+    details["artist"] = creator_name
+    
+    gallery_title = gallery_meta["title"]
+    details["description"] = f"Latest Doujin: {gallery_title}"
 
-    # Update genre counts
+    # Update genre counts (exclude artist, group, language, category)
     gallery_tags = meta.get("tags", [])
-    gallery_genres = [tag["name"] for tag in gallery_tags if "name" in tag]
+    gallery_genres = [
+        tag["name"] for tag in gallery_tags
+        if "name" in tag and tag.get("type") not in ["artist", "group", "language", "category"]
+    ]
+
     if os.path.exists(top_genres_file):
         with open(top_genres_file, "r", encoding="utf-8") as f:
             genre_counts = json.load(f)
@@ -408,14 +420,16 @@ def after_gallery_download_hook(meta: dict, gallery_id):
 
     for genre in gallery_genres:
         genre_counts[genre] = genre_counts.get(genre, 0) + 1
-
-    # Save updated genre counts
+    
+    # Save updated most_popular_genres.json
     with open(top_genres_file, "w", encoding="utf-8") as f:
         json.dump(genre_counts, f, ensure_ascii=False, indent=2)
 
     # Compute top 10 genres
-    top_10 = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-    details["genre"] = [g for g, count in top_10]
+    most_popular = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+    log_clarification()
+    log(f"Most Popular Genres for {creator_name}:\n{most_popular}")
+    details["genre"] = [g for g, count in most_popular]
 
     # Save updated details.json
     with open(details_file, "w", encoding="utf-8") as f:
@@ -426,8 +440,8 @@ def post_run_hook():
     log_clarification()
     log(f"Extension: {EXTENSION_NAME}: Post-run hook called.")
     
-    log_clarification()
-    log("") # <-------- ADD STUFF IN PLACE OF THIS
+    #log_clarification()
+    #log("") # <-------- ADD STUFF IN PLACE OF THIS
 
     log_clarification()
     remove_empty_directories(True)
