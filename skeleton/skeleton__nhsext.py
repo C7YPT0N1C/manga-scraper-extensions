@@ -1,24 +1,33 @@
 #!/usr/bin/env python3
-# extensions/skeleton/skeleton__nhsext.py
+# nhscraper/extensions/skeleton/skeleton__nhsext.py
+import os, sys, time, random, argparse, re, subprocess, urllib.parse # 'Default' imports
+
+import threading, asyncio, aiohttp, aiohttp_socks, json # Module-specific imports
+
+from nhscraper.core import orchestrator
+from nhscraper.core.orchestrator import *
+from nhscraper.core.api import get_session, get_meta_tags, make_filesystem_safe, clean_title
+
+"""
+MODULE DESCRIPTION
+Example extension for nhentai-scraper. It is also used as the default extension if none is specified.
+"""
+
+"""
 # ENSURE THAT THIS FILE IS THE *EXACT SAME* IN BOTH THE NHENTAI-SCRAPER REPO AND THE NHENTAI-SCRAPER-EXTENSIONS REPO.
 # PLEASE UPDATE THIS FILE IN THE NHENTAI-SCRAPER REPO FIRST, THEN COPY IT OVER TO THE NHENTAI-SCRAPER-EXTENSIONS REPO.
-
-import os, time, json, requests, threading
-
-from nhscraper.core.config import *
-from nhscraper.core.api import get_meta_tags, safe_name, clean_title
-
-# This is a skeleton/example extension for nhentai-scraper. It is also used as the default extension if none is specified.
-
-# ALL FUNCTIONS MUST BE THREAD SAFE. IF A FUNCTION MANIPULATES A GLOBAL VARIABLE, STORE AND UPDATE IT LOCALLY IF POSSIBLE. 
+ALL FUNCTIONS MUST BE THREAD SAFE. IF A FUNCTION MANIPULATES A GLOBAL VARIABLE, STORE AND UPDATE IT LOCALLY IF POSSIBLE.
+"""
 
 ####################################################################################################################
 # Global variables
 ####################################################################################################################
+
 EXTENSION_NAME = "skeleton" # Must be fully lowercase
+_module_referrer=f"{EXTENSION_NAME}" # Used in executor.* calls
+
 EXTENSION_INSTALL_PATH = "/opt/nhentai-scraper/downloads/" # Use this if extension installs external programs (like Suwayomi-Server)
 REQUESTED_DOWNLOAD_PATH = "/opt/nhentai-scraper/downloads/"
-#DEDICATED_DOWNLOAD_PATH = None # In case it tweaks out.
 
 LOCAL_MANIFEST_PATH = os.path.join(
     os.path.dirname(__file__), "..", "local_manifest.json"
@@ -27,6 +36,7 @@ LOCAL_MANIFEST_PATH = os.path.join(
 with open(os.path.abspath(LOCAL_MANIFEST_PATH), "r", encoding="utf-8") as f:
     manifest = json.load(f)
 
+DEDICATED_DOWNLOAD_PATH = None # In case it tweaks out.
 for ext in manifest.get("extensions", []):
     if ext.get("name") == EXTENSION_NAME:
         DEDICATED_DOWNLOAD_PATH = ext.get("image_download_path")
@@ -36,63 +46,78 @@ for ext in manifest.get("extensions", []):
 if DEDICATED_DOWNLOAD_PATH is None: # Default download folder here.
     DEDICATED_DOWNLOAD_PATH = REQUESTED_DOWNLOAD_PATH
 
-SUBFOLDER_STRUCTURE = ["creator", "title"] # SUBDIR_1, SUBDIR_2, etc
+# What metadata key maps to what subdirectory
+# Example: creator = SUBDIR_1, title = SUBDIR_2, etc
+SUBFOLDER_STRUCTURE = ["creator", "title"]
 
-############################################
+####################################################################
 
-# Thread locks for file operations
-_file_lock = threading.Lock()
+_clean_directories_lock = asyncio.Lock()
+
+# PUT YOUR VARIABLES HERE
 
 ####################################################################################################################
 # CORE
 ####################################################################################################################
-def update_extension_download_path():
-    log_clarification()
-    logger.info(f"Extension: {EXTENSION_NAME}: Ready.")
-    log(f"Extension: {EXTENSION_NAME}: Debugging started.", "debug")
-    update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH)
+
+# Hook for pre-run functionality. Use active_extension.pre_run_hook(ARGS) in downloader.
+def pre_run_hook():
+    """
+    This is one of this module's entrypoints.
+    """
     
-    if global_dry_run:
-        logger.info(f"[DRY-RUN] Would ensure download path exists: {DEDICATED_DOWNLOAD_PATH}")
+    log(f"{EXTENSION_NAME}: Ready.", "debug")
+    log(f"Extension: {EXTENSION_NAME}: Debugging started.", "debug")
+    
+    fetch_env_vars() # Refresh env vars in case config changed.
+    update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH) # Update download path in env
+    
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Would ensure download path exists: {DEDICATED_DOWNLOAD_PATH}", "info")
         return
     try:
         os.makedirs(DEDICATED_DOWNLOAD_PATH, exist_ok=True)
-        logger.info(f"Extension: {EXTENSION_NAME}: Download path ready at '{DEDICATED_DOWNLOAD_PATH}'.")
+        log(f"Extension: {EXTENSION_NAME}: Download path ready at '{DEDICATED_DOWNLOAD_PATH}'.", "debug")
     except Exception as e:
-        logger.error(f"Extension: {EXTENSION_NAME}: Failed to create download path '{DEDICATED_DOWNLOAD_PATH}': {e}")
+        log(f"Extension: {EXTENSION_NAME}: Failed to create download path '{DEDICATED_DOWNLOAD_PATH}': {e}", "error")
 
 def return_gallery_metas(meta):
-    artists = get_meta_tags(f"Extension: {EXTENSION_NAME}: Return_gallery_metas", meta, "artist")
-    groups = get_meta_tags(f"Extension: {EXTENSION_NAME}: Return_gallery_metas", meta, "group")
+    fetch_env_vars() # Refresh env vars in case config changed.
+    
+    artists = get_meta_tags(meta, "artist")
+    groups = get_meta_tags(meta, "group")
     creators = artists or groups or ["Unknown Creator"]
     
-    title = clean_title(meta)
+    # Use call_appropriately so this works from both async and sync contexts
+    title = executor.call_appropriately(clean_title, meta)
     id = str(meta.get("id", "Unknown ID"))
     full_title = f"({id}) {title}"
     
-    language = get_meta_tags(f"Extension: {EXTENSION_NAME}: Return_gallery_metas", meta, "language") or ["Unknown Language"]
+    gallery_language = get_meta_tags(meta, "language") or ["Unknown Language"]
     
-    log_clarification()
     return {
         "creator": creators,
         "title": full_title,
         "short_title": title,
         "id": id,
-        "language": language,
+        "language": gallery_language,
     }
 
 def install_extension():
     """
     Install the extension and ensure the dedicated image download path exists.
     """
+    
     global DEDICATED_DOWNLOAD_PATH, EXTENSION_INSTALL_PATH
+    
+    fetch_env_vars() # Refresh env vars in case config changed.
 
     if not DEDICATED_DOWNLOAD_PATH:
         # Fallback in case manifest didn't define it
         DEDICATED_DOWNLOAD_PATH = REQUESTED_DOWNLOAD_PATH
     
-    if global_dry_run:
-        logger.info(f"[DRY-RUN] Would install extension and create paths: {EXTENSION_INSTALL_PATH}, {DEDICATED_DOWNLOAD_PATH}")
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Would install extension and create paths: {EXTENSION_INSTALL_PATH}, {DEDICATED_DOWNLOAD_PATH}", "info")
         return
 
     try:
@@ -100,21 +125,24 @@ def install_extension():
         os.makedirs(EXTENSION_INSTALL_PATH, exist_ok=True)
         os.makedirs(DEDICATED_DOWNLOAD_PATH, exist_ok=True)
         
-        update_extension_download_path()
+        pre_run_hook()
         
-        logger.info(f"Extension: {EXTENSION_NAME}: Installed.")
+        log(f"Extension: {EXTENSION_NAME}: Installed.", "info")
     
     except Exception as e:
-        logger.error(f"Extension: {EXTENSION_NAME}: Failed to install: {e}")
+        log(f"Extension: {EXTENSION_NAME}: Failed to install: {e}", "error")
 
 def uninstall_extension():
     """
     Remove the extension and related paths.
     """
+    
     global DEDICATED_DOWNLOAD_PATH, EXTENSION_INSTALL_PATH
     
-    if global_dry_run:
-        logger.info(f"[DRY-RUN] Would uninstall extension and remove paths: {EXTENSION_INSTALL_PATH}, {DEDICATED_DOWNLOAD_PATH}")
+    fetch_env_vars() # Refresh env vars in case config changed.
+    
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Would uninstall extension and remove paths: {EXTENSION_INSTALL_PATH}, {DEDICATED_DOWNLOAD_PATH}", "info")
         return
     
     try:
@@ -124,10 +152,10 @@ def uninstall_extension():
         if os.path.exists(DEDICATED_DOWNLOAD_PATH):
             os.rmdir(DEDICATED_DOWNLOAD_PATH)
         
-        logger.info(f"Extension: {EXTENSION_NAME}: Uninstalled")
+        log(f"Extension: {EXTENSION_NAME}: Uninstalled", "info")
     
     except Exception as e:
-        logger.error(f"Extension: {EXTENSION_NAME}: Failed to uninstall: {e}")
+        log(f"Extension: {EXTENSION_NAME}: Failed to uninstall: {e}", "error")
 
 ####################################################################################################################
 # CUSTOM HOOKS (Create your custom hooks here, add them into the corresponding CORE HOOK)
@@ -135,69 +163,103 @@ def uninstall_extension():
 
 # Hook for testing functionality. Use active_extension.test_hook(ARGS) in downloader.
 def test_hook():
-    log_clarification()
+    """
+    Update environment variables used by this module.
+    Call this function at the start of any function that uses any these variables to ensure they are up to date.
+    """
+    
+    fetch_env_vars() # Refresh env vars in case config changed.
+    
+    log_clarification("debug")
     log(f"Extension: {EXTENSION_NAME}: Test Hook Called.", "debug")
-    log_clarification()
 
 # Remove empty folders inside DEDICATED_DOWNLOAD_PATH without deleting the root folder itself.
-def remove_empty_directories(RemoveEmptyArtistFolder: bool = True):
+async def clean_directories(RemoveEmptyArtistFolder: bool = True):
+    async with _clean_directories_lock:
+        await executor.io_to_thread(_clean_directories_sync, RemoveEmptyArtistFolder)
+
+def _clean_directories_sync(RemoveEmptyArtistFolder: bool = True):
     global DEDICATED_DOWNLOAD_PATH
+    
+    fetch_env_vars()
+    log_clarification("debug")
 
     if not DEDICATED_DOWNLOAD_PATH or not os.path.isdir(DEDICATED_DOWNLOAD_PATH):
         log("No valid DEDICATED_DOWNLOAD_PATH set, skipping cleanup.", "debug")
         return
 
-    if global_dry_run:
-        logger.info(f"[DRY-RUN] Would remove empty directories under {DEDICATED_DOWNLOAD_PATH}")
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Would remove empty directories under {DEDICATED_DOWNLOAD_PATH}", "info")
         return
 
-    if RemoveEmptyArtistFolder:
-        for dirpath, dirnames, filenames in os.walk(DEDICATED_DOWNLOAD_PATH, topdown=False):
-            if dirpath == DEDICATED_DOWNLOAD_PATH:
-                continue
-            try:
-                if not os.listdir(dirpath):
-                    os.rmdir(dirpath)
-                    logger.info(f"Removed empty directory: {dirpath}")
-            except Exception as e:
-                logger.warning(f"Could not remove empty directory: {dirpath}: {e}")
-    else:
-        for dirpath, dirnames, filenames in os.walk(DEDICATED_DOWNLOAD_PATH, topdown=False):
-            if dirpath == DEDICATED_DOWNLOAD_PATH:
-                continue
-            if not dirnames and not filenames:
-                try:
-                    os.rmdir(dirpath)
-                    logger.info(f"Removed empty directory: {dirpath}")
-                except Exception as e:
-                    logger.warning(f"Could not remove empty directory: {dirpath}: {e}")
+    # Pass 1: remove empty or nearly-empty dirs
+    for dirpath, dirnames, filenames in os.walk(DEDICATED_DOWNLOAD_PATH, topdown=False):
+        if dirpath == DEDICATED_DOWNLOAD_PATH:
+            continue
 
-    logger.info(f"Removed empty directories.")
-    DEDICATED_DOWNLOAD_PATH = ""
-    update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH)
+        try:
+            contents = os.listdir(dirpath)
+
+            # Case A: RemoveEmptyArtistFolder = True → also count dirs with only details.json
+            if RemoveEmptyArtistFolder:
+                if not contents or (len(contents) == 1 and contents[0].lower() == "details.json"):
+                    os.rmdir(dirpath)
+                    log(f"Removed empty artist folder: {dirpath}", "info")
+
+            # Case B: RemoveEmptyArtistFolder = False → only remove truly empty dirs
+            else:
+                if not dirnames and not filenames:
+                    os.rmdir(dirpath)
+                    log(f"Removed empty directory: {dirpath}", "info")
+
+        except Exception as e:
+            log(f"Could not remove empty directory: {dirpath}: {e}", "warning")
+
+    log("Removed empty directories.", "info")
+    log_clarification()
+
+    # Pass 2: clean broken symlinks
+    if not DEDICATED_DOWNLOAD_PATH or not os.path.isdir(DEDICATED_DOWNLOAD_PATH):
+        log("No valid DEDICATED_DOWNLOAD_PATH for symlink check.", "warning")
+        return
+
+    removed = 0
+    for dirpath, _, filenames in os.walk(DEDICATED_DOWNLOAD_PATH):
+        for fname in filenames:
+            full_path = os.path.join(dirpath, fname)
+            if os.path.islink(full_path) and not os.path.exists(os.readlink(full_path)):
+                try:
+                    os.unlink(full_path)
+                    log(f"Removed broken symlink: {full_path}", "info")
+                    removed += 1
+                except Exception as e:
+                    log(f"Failed to remove broken symlink {full_path}: {e}", "warning")
+
+    log(f"Fixed {removed} broken symlink(s).", "info")
+    
+############################################
+
+# PUT YOUR CUSTOM HOOKS HERE
 
 ####################################################################################################################
-# CORE HOOKS (Please add to the functions, try not to change or remove anything)
+# CORE HOOKS (Please add to the functions, do NOT change or remove any function names)
 ####################################################################################################################
 
 # Hook for downloading images. Use active_extension.download_images_hook(ARGS) in downloader.
-def download_images_hook(gallery, page, urls, path, session, pbar=None, creator=None, retries=None):
+def download_images_hook(gallery, page, urls, path, _downloader_session, pbar=None, creator=None):
     """
     Downloads an image from one of the provided URLs to the given path.
     Tries mirrors in order until one succeeds, with retries per mirror.
     Updates tqdm progress bar with current creator.
     """
-    #log_clarification()
-    #log(f"Extension: {EXTENSION_NAME}: Image Download Hook Called.", "debug")
-    
+
+    fetch_env_vars() # Refresh env vars in case config changed.
+
     if not urls:
-        logger.warning(f"Gallery {gallery}: Page {page}: No URLs, skipping")
+        log(f"Gallery {gallery}: Page {page}: No URLs, skipping", "warning")
         if pbar and creator:
             pbar.set_postfix_str(f"Skipped Creator: {creator}")
         return False
-
-    if retries is None:
-        retries = config.get("MAX_RETRIES", DEFAULT_MAX_RETRIES)
 
     if os.path.exists(path):
         log(f"Already exists, skipping: {path}", "debug")
@@ -205,99 +267,157 @@ def download_images_hook(gallery, page, urls, path, session, pbar=None, creator=
             pbar.set_postfix_str(f"Creator: {creator}")
         return True
 
-    if global_dry_run:
-        logger.info(f"[DRY-RUN] Gallery {gallery}: Would download {urls[0]} -> {path}")
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Gallery {gallery}: Would download {urls[0]} -> {path}", "info")
         if pbar and creator:
             pbar.set_postfix_str(f"Creator: {creator}")
         return True
 
-    if not isinstance(session, requests.Session):
-        session = requests.Session()
+    if _downloader_session is None: # Use executor.run_blocking()
+        _downloader_session = executor.run_blocking(get_session, status="rebuild")
 
-    # Loop through mirrors
-    for url in urls:
-        for attempt in range(1, retries + 1):
-            try:
-                r = session.get(url, timeout=30, stream=True)
-                if r.status_code == 429:
-                    wait = 2 ** attempt
-                    logger.warning(f"429 rate limit hit for {url}, waiting {wait}s")
-                    time.sleep(wait)
-                    continue
-                r.raise_for_status()
+    def try_download(session, mirrors, retries, tor_rotate=False):
+        """Try downloading with a given session and retry count."""
+        
+        for url in mirrors:
+            for attempt in range(1, retries + 1):
+                try:
+                    r = session.get(url, timeout=10, stream=True)
+                    if r.status_code == 429:
+                        dynamic_sleep(stage="api", attempt=attempt)
+                            
+                        log(f"429 rate limit hit for {url}, backing off (attempt {attempt})", "warning")
+                        continue
+                    r.raise_for_status()
 
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
 
-                log(f"Downloaded Gallery {gallery}: Page {page} -> {path}", "debug")
-                if pbar and creator:
-                    pbar.set_postfix_str(f"Creator: {creator}")
-                return True
+                    # log(f"Downloaded Gallery {gallery}: Page {page} -> {path}", "debug")
+                    log(f"Downloaded Gallery {gallery}: Page {page} -> {path}", "debug")
+                    if pbar and creator:
+                        pbar.set_postfix_str(f"Creator: {creator}")
+                    return True
 
-            except Exception as e:
-                wait = 2 ** attempt
-                log_clarification()
-                logger.warning(f"Gallery {gallery}: Page {page}: Mirror {url}, attempt {attempt} failed: {e}, retrying in {wait}s")
-                time.sleep(wait)
+                except Exception as e:
+                    dynamic_sleep(stage="gallery", attempt=attempt)
+                    log_clarification()
+                    log(f"Gallery {gallery}: Page {page}: Mirror {url}, attempt {attempt} failed: {e}, retrying", "warning")
 
-        # If all retries for this mirror failed, move to next mirror
-        logger.warning(f"Gallery {gallery}: Page {page}: Mirror {url} failed after {retries} attempts, trying next mirror")
+            log(f"Gallery {gallery}: Page {page}: Mirror {url} failed after {retries} attempts, trying next mirror", "warning")
+        return False
 
-    # If no mirrors succeeded
-    log_clarification()
-    logger.error(f"Gallery {gallery}: Page {page}: All mirrors failed after {retries} retries each: {urls}")
+    # First attempt: normal retries
+    success = try_download(_downloader_session, urls, orchestrator.max_retries)
+
+    # If still failed, rebuild Tor session once and retry
+    if not success and orchestrator.use_tor:
+        log(f"Gallery {gallery}: Page {page}: All retries failed, rotating Tor node and retrying once more...", "warning")
+        
+        # Use executor.run_blocking()
+        _downloader_session = executor.run_blocking(get_session, status="rebuild")
+        success = try_download(_downloader_session, urls, 1, tor_rotate=True)
+
+    if not success:
+        log_clarification()
+        log(f"Gallery {gallery}: Page {page}: All mirrors failed after Tor rotate too: {urls}", "error")
+        if pbar and creator:
+            pbar.set_postfix_str(f"Failed Creator: {creator}")
+
+    return success
+
+# Hook for pre-batch functionality. Use active_extension.pre_batch_hook(ARGS) in downloader.
+def pre_batch_hook(gallery_list):
+    fetch_env_vars() # Refresh env vars in case config changed.
     
-    if pbar and creator:
-        pbar.set_postfix_str(f"Failed Creator: {creator}")
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Extension: {EXTENSION_NAME}: Pre-batch Hook Inactive.", "info")
+        return
     
-    return False
-
-# Hook for pre-run functionality. Use active_extension.pre_run_hook(ARGS) in downloader.
-def pre_run_hook(gallery_list):
-    update_extension_download_path()
+    log_clarification("debug")
+    log(f"Extension: {EXTENSION_NAME}: Pre-batch Hook Called.", "debug")
     
-    log_clarification()
-    log(f"Extension: {EXTENSION_NAME}: Pre-run Hook Called.", "debug")
-    
-    #log_clarification()
+    #log_clarification("debug")
     #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
     
     return gallery_list
 
 # Hook for functionality before a gallery download. Use active_extension.pre_gallery_download_hook(ARGS) in downloader.
 def pre_gallery_download_hook(gallery_id):
-    log_clarification()
+    fetch_env_vars() # Refresh env vars in case config changed.
+    
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Extension: {EXTENSION_NAME}: Pre-download Hook Inactive.", "info")
+    
+    log_clarification("debug")
     log(f"Extension: {EXTENSION_NAME}: Pre-download Hook Called: Gallery: {gallery_id}", "debug")
     
-    #log_clarification()
+    #log_clarification("debug")
     #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
 
 # Hook for functionality during a gallery download. Use active_extension.during_gallery_download_hook(ARGS) in downloader.
 def during_gallery_download_hook(gallery_id):
-    log_clarification()
+    fetch_env_vars() # Refresh env vars in case config changed.
+    
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Extension: {EXTENSION_NAME}: During-download Hook Inactive.", "info")
+        return
+    
+    log_clarification("debug")
     log(f"Extension: {EXTENSION_NAME}: During-download Hook Called: Gallery: {gallery_id}", "debug")
     
-    #log_clarification()
+    #log_clarification("debug")
     #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
 
 # Hook for functionality after a completed gallery download. Use active_extension.after_completed_gallery_download_hook(ARGS) in downloader.
 def after_completed_gallery_download_hook(meta: dict, gallery_id):
-    log_clarification()
+    fetch_env_vars() # Refresh env vars in case config changed.
+    
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Extension: {EXTENSION_NAME}: Post-download Hook Inactive.", "info")
+        return
+    
+    log_clarification("debug")
     log(f"Extension: {EXTENSION_NAME}: Post-Completed Gallery Download Hook Called: Gallery: {meta['id']}: Downloaded.", "debug")
     
-    #log_clarification()
+    #log_clarification("debug")
     #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
 
-# Hook for post-run functionality. Reset download path. Use active_extension.post_run_hook(ARGS) in downloader.
+# Hook for post-batch functionality. Use active_extension.post_batch_hook(ARGS) in downloader.
+def post_batch_hook():
+    fetch_env_vars() # Refresh env vars in case config changed.
+    
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Extension: {EXTENSION_NAME}: Post-batch Hook Inactive.", "info")
+        return
+    
+    log_clarification("debug")
+    log(f"Extension: {EXTENSION_NAME}: Post-batch Hook Called.", "debug")
+    
+    #log_clarification("debug")
+    #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
+
+# Hook for post-run functionality. Use active_extension.post_run_hook(ARGS) in downloader.
 def post_run_hook():
-    log_clarification()
+    fetch_env_vars() # Refresh env vars in case config changed.
+    
+    if orchestrator.dry_run:
+        log(f"[DRY RUN] Extension: {EXTENSION_NAME}: Post-run Hook Inactive.", "info")
+        return
+    
+    log_clarification("debug")
     log(f"Extension: {EXTENSION_NAME}: Post-run Hook Called.", "debug")
     
-    #log_clarification()
-    #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
-
-    log_clarification()
-    remove_empty_directories(True)
+    clean_directories(True)
+    
+    if orchestrator.skip_post_run == True:
+        log_clarification("debug")
+        log(f"Extension: {EXTENSION_NAME}: Post-run Hook Skipped.", "debug")
+    else:
+        log_clarification("debug")
+        log(f"Extension: {EXTENSION_NAME}: Post-run Hook Active.", "debug")
+        
+        #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
