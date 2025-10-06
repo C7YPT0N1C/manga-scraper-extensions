@@ -3,7 +3,7 @@
 # ENSURE THAT THIS FILE IS THE *EXACT SAME* IN BOTH THE NHENTAI-SCRAPER REPO AND THE NHENTAI-SCRAPER-EXTENSIONS REPO.
 # PLEASE UPDATE THIS FILE IN THE NHENTAI-SCRAPER REPO FIRST, THEN COPY IT OVER TO THE NHENTAI-SCRAPER-EXTENSIONS REPO.
 
-import os, time, json, requests
+import os, time, json, requests, math
 
 from nhscraper.core import orchestrator
 from nhscraper.core.orchestrator import *
@@ -41,6 +41,11 @@ if DEDICATED_DOWNLOAD_PATH is None: # Default download folder here.
     DEDICATED_DOWNLOAD_PATH = REQUESTED_DOWNLOAD_PATH
 
 SUBFOLDER_STRUCTURE = ["creator", "title"] # SUBDIR_1, SUBDIR_2, etc
+
+# Used to optionally run stuff in hooks (for example, cleaning the download directory) roughly "RUNS_PER_X_BATCHES" times every "EVERY_X_BATCHES" batches.
+# Increase this if the operations in your post batch / run hooks get increasingly demanding the larger the library is.
+EVERY_X_BATCHES = 5
+RUNS_PER_X_BATCHES = 2
 
 ####################################################################
 
@@ -371,9 +376,13 @@ def after_completed_gallery_download_hook(meta: dict, gallery_id):
     #log_clarification("debug")
     #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
 
+# Hook for cleaning after downloads
+def cleanup_hook():
+    clean_directories(True) # Clean up the download folder / directories
+
 # Hook for post-batch functionality. Use active_extension.post_batch_hook(ARGS) in downloader.
-def post_batch_hook():
-    fetch_env_vars() # Refresh env vars in case config changed.
+def post_batch_hook(current_batch_number: int, total_batch_numbers: int):
+    fetch_env_vars()  # Refresh env vars in case config changed.
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Post-batch Hook Inactive.")
@@ -381,6 +390,12 @@ def post_batch_hook():
     
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Post-batch Hook Called.", "debug")
+
+    # --- Run if current batch hits interval or last batch ---
+    interval = max(1, round(RUNS_PER_X_BATCHES * total_batch_numbers / EVERY_X_BATCHES))
+    is_last_batch = current_batch_number == total_batch_numbers
+    if (current_batch_number % interval == 0) or is_last_batch:
+        cleanup_hook() # Call the cleanup hook
     
     #log_clarification("debug")
     #log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS
@@ -396,11 +411,11 @@ def post_run_hook():
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Post-run Hook Called.", "debug")
     
-    clean_directories(True)
-    
     if orchestrator.skip_post_run == True:
         log_clarification("debug")
         log(f"{EXTENSION_REFERRER}: Post-run Hook Skipped.", "debug")
     else:
+        cleanup_hook() # Call the cleanup hook
+        
         log_clarification("debug")
         log("", "debug") # <-------- ADD STUFF IN PLACE OF THIS

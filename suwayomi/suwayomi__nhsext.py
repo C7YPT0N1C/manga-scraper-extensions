@@ -3,7 +3,7 @@
 # ENSURE THAT THIS FILE IS THE *EXACT SAME* IN BOTH THE NHENTAI-SCRAPER REPO AND THE NHENTAI-SCRAPER-EXTENSIONS REPO.
 # PLEASE UPDATE THIS FILE IN THE NHENTAI-SCRAPER REPO FIRST, THEN COPY IT OVER TO THE NHENTAI-SCRAPER-EXTENSIONS REPO.
 
-import os, time, json, requests, threading, subprocess, shutil, tarfile
+import os, time, json, requests, threading, subprocess, shutil, tarfile, math
 
 from requests.auth import HTTPBasicAuth
 from tqdm import tqdm
@@ -35,10 +35,16 @@ for ext in manifest.get("extensions", []):
         DEDICATED_DOWNLOAD_PATH = ext.get("image_download_path")
         break
 
-if DEDICATED_DOWNLOAD_PATH is None:
+# Optional fallback
+if DEDICATED_DOWNLOAD_PATH is None: # Default download folder here.
     DEDICATED_DOWNLOAD_PATH = REQUESTED_DOWNLOAD_PATH
 
-SUBFOLDER_STRUCTURE = ["creator", "title"]
+SUBFOLDER_STRUCTURE = ["creator", "title"] # SUBDIR_1, SUBDIR_2, etc
+
+# Used to optionally run stuff in hooks (for example, cleaning the download directory) roughly "RUNS_PER_X_BATCHES" times every "EVERY_X_BATCHES" batches.
+# Increase this if the operations in your post batch / run hooks get increasingly demanding the larger the library is.
+EVERY_X_BATCHES = 10
+RUNS_PER_X_BATCHES = 3
 
 ####################################################################
 
@@ -47,54 +53,59 @@ GRAPHQL_URL = "http://127.0.0.1:4567/api/graphql"
 LOCAL_SOURCE_ID = None  # Local source is usually "0"
 SUWAYOMI_CATEGORY_NAME = "NHentai Scraped"
 CATEGORY_ID = None
+SUWAYOMI_POPULATION_TIME = 2 # Suwayomi update ticks every ~2 secs.
 
-AUTH_USERNAME = config.get("BASIC_AUTH_USERNAME", None) # Must be manually set for now. # TEST
+# NOTE: TEST
+AUTH_USERNAME = config.get("BASIC_AUTH_USERNAME", None) # Must be manually set for now.
 AUTH_PASSWORD = config.get("BASIC_AUTH_PASSWORD", None) # Must be manually set for now.
 
 # Max number of genres stored in a creator's details.json
-MAX_GENRES_STORED = 25
+MAX_GENRES_STORED = 50
 # Max number of genres parsed from a gallery and stored in a creator's "genre_count" field in creators_metadata.json.
-MAX_GENRES_PARSED = 100
+MAX_GENRES_PARSED = 1000
 
 # Keep a persistent session for cookie-based login
 graphql_session = None
 
 # Thread locks for file operations
-_popular_genres_lock = threading.Lock()
-
-_collected_gallery_metas = []
 _gallery_meta_lock = threading.Lock()
-
-_deferred_creators_lock = threading.Lock()
+_collected_gallery_metas = []
 
 creators_metadata_file = os.path.join(DEDICATED_DOWNLOAD_PATH, "creators_metadata.json")
+_creators_metadata_lock = threading.Lock()
 
 def load_creators_metadata() -> dict:
-    if os.path.exists(creators_metadata_file):
-        try:
-            with open(creators_metadata_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"Could not load creators_metadata.json: {e}")
-    # Initialise dictionaries if missing
-    return {
-        "collected_manga_ids": [],
-        "deferred_creators": [],
-        "creators": {}
-    }
+    with _creators_metadata_lock:
+        if os.path.exists(creators_metadata_file):
+            try:
+                with open(creators_metadata_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Could not load creators_metadata.json: {e}")
+        
+        # Initialise dictionaries if missing
+        return {
+            "collected_manga_ids": [],
+            "deferred_creators": [],
+            "creators": {}
+        }
 
 def save_creators_metadata(metadata: dict):
-    try:
-        os.makedirs(os.path.dirname(creators_metadata_file), exist_ok=True)
-        with open(creators_metadata_file, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"Could not save creators_metadata.json: {e}")
-
+    with _creators_metadata_lock:
+        try:
+            os.makedirs(os.path.dirname(creators_metadata_file), exist_ok=True)
+            with open(creators_metadata_file, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Could not save creators_metadata.json: {e}")
+        
 # ---- Global deferred list ----
+_deferred_creators_lock = threading.Lock()
+
 def load_deferred_creators() -> set[str]:
-    metadata = load_creators_metadata()
-    return set(metadata.get("deferred_creators", []))
+    with _deferred_creators_lock:
+        metadata = load_creators_metadata()
+        return set(metadata.get("deferred_creators", []))
 
 def save_deferred_creators(creators: set[str]):
     metadata = load_creators_metadata()
@@ -349,14 +360,14 @@ def graphql_request(request: str, variables: dict = None, debugging: bool = Fals
     try:
         if debug == True:
             log_clarification("debug")
-            log(f"GraphQL Request Payload:\n{json.dumps(payload, indent=2)}", "debug") # DEBUGGING
+            log(f"GraphQL Request Payload:\n{json.dumps(payload, indent=2)}", "debug") # NOTE: DEBUGGING
         
         response = requests.post(GRAPHQL_URL, headers=headers, data=json.dumps(payload))
         response.raise_for_status()
         result = response.json()
         
         if debug == True:
-            log(f"GraphQL Response:\n{json.dumps(result, indent=2)}", "debug") # DEBUGGING
+            log(f"GraphQL Response:\n{json.dumps(result, indent=2)}", "debug") # NOTE: DEBUGGING
         return result
     
     except requests.RequestException as e:
@@ -410,7 +421,7 @@ def new_graphql_request(request: str, variables: dict = None, debugging: bool = 
 
         if debug == True:
             log_clarification("debug")
-            log(f"GraphQL Request Payload: {json.dumps(payload, indent=2)}", "debug") # DEBUGGING
+            log(f"GraphQL Request Payload: {json.dumps(payload, indent=2)}", "debug") # NOTE: DEBUGGING
         
         response = graphql_session.post(
             GRAPHQL_URL,
@@ -421,7 +432,7 @@ def new_graphql_request(request: str, variables: dict = None, debugging: bool = 
         result = response.json()
         
         if debug == True:
-            log(f"GraphQL Request Response: {json.dumps(result, indent=2)}", "debug") # DEBUGGING
+            log(f"GraphQL Request Response: {json.dumps(result, indent=2)}", "debug") # NOTE: DEBUGGING
         
         return result
 
@@ -463,11 +474,10 @@ def get_local_source_id():
     LOCAL_SOURCE_ID = None
 
 def ensure_category(category_name=None):
-    
-    wait = 10
+    wait = SUWAYOMI_POPULATION_TIME * 4
     log_clarification("debug")
-    log(f"Waiting {wait} seconds for Suwayomi to populate data...")
-    time.sleep(wait) # Wait 10
+    log(f"Waiting {wait}s for Suwayomi to populate data...")
+    time.sleep(wait)
     
     global CATEGORY_ID
     name = category_name or SUWAYOMI_CATEGORY_NAME
@@ -617,7 +627,7 @@ def update_suwayomi(operation: str, category_id, debugging: bool = False):
     if operation == "status":
         # Query to check the status repeatedly
         query = """
-        query CheckLibraryCategoryUpdateStatus {
+        query CheckGlobalUpdateStatus {
           libraryUpdateStatus {
             jobsInfo {
               isRunning
@@ -634,9 +644,9 @@ def update_suwayomi(operation: str, category_id, debugging: bool = False):
 
 def populate_suwayomi(category_id: int, attempt: int):
     log_clarification()
-    logger.info(f"Suwayomi Update Triggered. Waiting for completion...")
+    log(f"Suwayomi Update Triggered. Waiting for completion...", "warning")
     
-    wait_time = 4
+    wait_time = SUWAYOMI_POPULATION_TIME
 
     try:
         # Fetch all mangas in the category update
@@ -651,7 +661,10 @@ def populate_suwayomi(category_id: int, attempt: int):
         total_jobs = None
 
         while True:
-            result = update_suwayomi("status", category_id, debugging=False)
+            result = update_suwayomi("status", category_id, debugging=False) # NOTE: DEBUGGING
+            
+            # Wait BEFORE checking status to avoid exiting early.
+            time.sleep(wait_time)
 
             if not result:
                 logger.warning("Failed to fetch update status, retrying...")
@@ -684,7 +697,8 @@ def populate_suwayomi(category_id: int, attempt: int):
                 continue
 
             if not is_running:
-                logger.info("GraphQL: Suwayomi Update has been stopped either by the user or Suwayomi. Exiting.")
+                log("GraphQL: Suwayomi Update has either finished before GraphQL could check, or has been stopped either by the user or Suwayomi.", "info")
+                log("Exiting Update Loop.", "info")
                 break  # Immediate exit if update stopped
 
             # Set total if available
@@ -706,8 +720,7 @@ def populate_suwayomi(category_id: int, attempt: int):
                 logger.warning(f"Waiting {wait}s for Suwayomi to reflect all changes...")
                 time.sleep(wait)
                 break
-
-            # Adaptive polling
+                
             time.sleep(max(wait_time, (1 + total / 1000))) # Adaptive polling
 
         pbar.close()
@@ -881,11 +894,28 @@ def update_creator_manga(meta):
         try:
             for creator_name in creators:
                 creator_folder = os.path.join(DEDICATED_DOWNLOAD_PATH, creator_name)
-                gallery_folder = os.path.join(creator_folder, gallery_meta["title"])
-                if not os.path.exists(gallery_folder):
-                    logger.info(f"Skipping manga cover update: Gallery folder not found: {gallery_folder}")
+
+                # Find all gallery folders matching "(GALLERY_ID) GALLERY_NAME"
+                gallery_folders = [
+                    f for f in os.listdir(creator_folder)
+                    if os.path.isdir(os.path.join(creator_folder, f)) and f.startswith("(")
+                ]
+                if not gallery_folders:
+                    logger.info(f"No gallery folders found for {creator_name}")
                     continue
 
+                # Sort folders by numeric GALLERY_ID descending
+                def extract_id(folder_name):
+                    try:
+                        return int(folder_name.split(")")[0].strip("("))
+                    except ValueError:
+                        return -1
+
+                gallery_folders.sort(key=extract_id, reverse=True)
+                latest_gallery = gallery_folders[0]
+                gallery_folder = os.path.join(creator_folder, latest_gallery)
+
+                # Find the first image (e.g., 1.jpg, 1.png, etc.)
                 candidates = [f for f in os.listdir(gallery_folder) if f.startswith("1.")]
                 if not candidates:
                     logger.info(f"Skipping manga cover update: No 'page 1' found in Gallery: {gallery_folder}")
@@ -894,7 +924,7 @@ def update_creator_manga(meta):
                 page1_file = os.path.join(gallery_folder, candidates[0])
                 _, ext = os.path.splitext(page1_file)
 
-                # Remove old cover
+                # Remove old cover files
                 for f in os.listdir(creator_folder):
                     if f.startswith("cover."):
                         try:
@@ -904,8 +934,8 @@ def update_creator_manga(meta):
                             logger.info(f"Failed to remove old cover file for {creator_folder}: {e}")
                             logger.info("You can safely ignore this. Suwayomi will generate it automatically.")
 
+                # Copy the new cover
                 cover_file = os.path.join(creator_folder, f"cover{ext}")
-                
                 shutil.copy2(page1_file, cover_file)
                 logger.info(f"Updated manga cover for {creator_name}: {cover_file}")
 
@@ -972,8 +1002,7 @@ def process_deferred_creators():
         # ----------------------------
         log_clarification()
 
-        with _deferred_creators_lock:
-            deferred_creators = load_deferred_creators()
+        deferred_creators = load_deferred_creators()
 
         if not deferred_creators:
             logger.info("GraphQL: No deferred creators to process.")
@@ -1196,9 +1225,16 @@ def after_completed_gallery_download_hook(meta: dict, gallery_id):
     # Update creator's popular genres
     update_creator_manga(meta)
 
+# Hook for cleaning after downloads
+def cleanup_hook():
+    clean_directories(True) # Clean up the download folder / directories
+        
+    # Add all creators to Suwayomi
+    process_deferred_creators()
+
 # Hook for post-batch functionality. Use active_extension.post_batch_hook(ARGS) in downloader.
-def post_batch_hook():
-    fetch_env_vars() # Refresh env vars in case config changed.
+def post_batch_hook(current_batch_number: int, total_batch_numbers: int):
+    fetch_env_vars()  # Refresh env vars in case config changed.
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Post-batch Hook Inactive.")
@@ -1206,6 +1242,12 @@ def post_batch_hook():
     
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Post-batch Hook Called.", "debug")
+
+    # --- Run if current batch hits interval or last batch ---
+    interval = max(1, round(RUNS_PER_X_BATCHES * total_batch_numbers / EVERY_X_BATCHES))
+    is_last_batch = current_batch_number == total_batch_numbers
+    if (current_batch_number % interval == 0) or is_last_batch:
+        cleanup_hook() # Call the cleanup hook     
 
 # Hook for post-run functionality. Use active_extension.post_run_hook(ARGS) in downloader.
 def post_run_hook():
@@ -1218,14 +1260,11 @@ def post_run_hook():
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Post-run Hook Called.", "debug")
     
-    clean_directories(True)
-    
     if orchestrator.skip_post_run == True:
         log_clarification("debug")
         log(f"{EXTENSION_REFERRER}: Post-run Hook Skipped.", "debug")
     else:
-        # Add all creators to Suwayomi
-        process_deferred_creators()
+        cleanup_hook() # Call the cleanup hook
         
         # Update Suwayomi category at end
         log_clarification()
