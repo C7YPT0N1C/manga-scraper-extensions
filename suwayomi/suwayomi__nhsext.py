@@ -43,8 +43,9 @@ SUBFOLDER_STRUCTURE = ["creator", "title"] # SUBDIR_1, SUBDIR_2, etc
 
 # Used to optionally run stuff in hooks (for example, cleaning the download directory) roughly "RUNS_PER_X_BATCHES" times every "EVERY_X_BATCHES" batches.
 # Increase this if the operations in your post batch / run hooks get increasingly demanding the larger the library is.
+MAX_X_BATCHES = 50
 EVERY_X_BATCHES = 10
-RUNS_PER_X_BATCHES = 3
+RUNS_PER_X_BATCHES = 1
 
 ####################################################################
 
@@ -135,7 +136,7 @@ def pre_run_hook():
     logger.debug(f"{EXTENSION_REFERRER}: Ready.")
     log(f"{EXTENSION_REFERRER}: Debugging started.", "debug")
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH) # Update download path in env
     
     if orchestrator.dry_run:
@@ -148,7 +149,7 @@ def pre_run_hook():
         logger.error(f"{EXTENSION_REFERRER}: Failed to create download path '{DEDICATED_DOWNLOAD_PATH}': {e}")
 
 def return_gallery_metas(meta):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     artists = get_meta_tags(f"{EXTENSION_REFERRER}: Return_gallery_metas", meta, "artist")
     groups = get_meta_tags(f"{EXTENSION_REFERRER}: Return_gallery_metas", meta, "group")
@@ -174,7 +175,7 @@ TARBALL_FILENAME = SUWAYOMI_TARBALL_URL.split("/")[-1]
 def install_extension():
     global DEDICATED_DOWNLOAD_PATH, EXTENSION_INSTALL_PATH
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
 
     if not DEDICATED_DOWNLOAD_PATH:
         DEDICATED_DOWNLOAD_PATH = REQUESTED_DOWNLOAD_PATH
@@ -237,7 +238,7 @@ WantedBy=multi-user.target
 def uninstall_extension():
     global DEDICATED_DOWNLOAD_PATH, EXTENSION_INSTALL_PATH
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
 
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] Would uninstall extension and remove paths: {EXTENSION_INSTALL_PATH}, {DEDICATED_DOWNLOAD_PATH}")
@@ -272,7 +273,7 @@ def test_hook():
     Call this function at the start of any function that uses any these variables to ensure they are up to date.
     """
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Test Hook Called.", "debug")
@@ -281,7 +282,7 @@ def test_hook():
 def clean_directories(RemoveEmptyArtistFolder: bool = True):
     global DEDICATED_DOWNLOAD_PATH
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     log_clarification("debug")
 
@@ -338,17 +339,20 @@ def clean_directories(RemoveEmptyArtistFolder: bool = True):
 
 ############################################
 
-def graphql_request(request: str, variables: dict = None, debugging: bool = False):
+def graphql_request(request: str, variables: dict = None, gql_debugging: bool = False):
     """
     Framework for making requests to GraphQL
     """
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
-    if debugging:
-        debug = debugging
+    if gql_debugging:
+        debug = gql_debugging
     else:
         debug = orchestrator.debug
+    
+    # Forcefully enable or disable detailed debug logs
+    #debug = True
     
     headers = {"Content-Type": "application/json"}
     payload = {"query": request, "variables": variables or {}}
@@ -379,19 +383,22 @@ def graphql_request(request: str, variables: dict = None, debugging: bool = Fals
         logger.error(f"Raw response: {response.text if response else 'No response'}")
         return None
 
-def new_graphql_request(request: str, variables: dict = None, debugging: bool = False):
+def new_graphql_request(request: str, variables: dict = None, gql_debugging: bool = False):
     """
     New framework for making requests to GraphQL. Allows for authentication with the server.
     """
     
     global graphql_session, AUTH_USERNAME, AUTH_PASSWORD
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
-    if debugging:
-        debug = debugging
+    if gql_debugging:
+        debug = gql_debugging
     else:
         debug = orchestrator.debug
+    
+    # Forcefully enable or disable detailed debug logs
+    #debug = True
     
     headers = {"Content-Type": "application/json"}
     payload = {"query": request, "variables": variables or {}}
@@ -477,7 +484,6 @@ def ensure_category(category_name=None):
     wait = SUWAYOMI_POPULATION_TIME * 4
     log_clarification("debug")
     log(f"Waiting {wait}s for Suwayomi to populate data...")
-    time.sleep(wait)
     
     global CATEGORY_ID
     name = category_name or SUWAYOMI_CATEGORY_NAME
@@ -491,7 +497,7 @@ def ensure_category(category_name=None):
     }
     """
     query_variables = {"name": name}
-    result = graphql_request(query, query_variables)   
+    result = graphql_request(query, variables=query_variables)   
     #log(f"GraphQL: Category query result: {result}", "debug")
     nodes = result.get("data", {}).get("categories", {}).get("nodes", [])
     if nodes:
@@ -508,23 +514,25 @@ def ensure_category(category_name=None):
     }
     """
     query_variables = {"name": name}
-    result = graphql_request(mutation, query_variables)
+    result = graphql_request(mutation, variables=query_variables)
     log(f"GraphQL: Create category result: {result}", "debug")
     CATEGORY_ID = int(result["data"]["createCategory"]["category"]["id"])
+    
+    time.sleep(wait)
     return CATEGORY_ID
 
 # ----------------------------
 # Bulk Update Functions
 # ----------------------------
 
-def update_suwayomi(operation: str, category_id, debugging: bool = False):
+def update_suwayomi(operation: str, category_id, update_suwayomi_debugging: bool = False):
     """
     Turn debug on for the GraphQL queries and the logs will get VERY long.
     """
 
     LOCAL_SOURCE_ID = get_local_source_id()  # Fetch again in case
 
-    if operation == "category":
+    if operation == "category browse":
         # Query to fetch available filters and meta for a source
         query = """
         query FetchSourceBrowse($sourceId: LongString!) {
@@ -566,7 +574,7 @@ def update_suwayomi(operation: str, category_id, debugging: bool = False):
         }
         """
         query_variables = {"sourceId": LOCAL_SOURCE_ID}
-        graphql_request(query, query_variables, debugging)
+        graphql_request(query, variables=query_variables, gql_debugging=update_suwayomi_debugging)
 
         # Mutation to fetch source mangas, sorted by latest
         latest_query = """
@@ -602,12 +610,12 @@ def update_suwayomi(operation: str, category_id, debugging: bool = False):
         }
         """
         query_variables = {"sourceId": LOCAL_SOURCE_ID, "page": 1}
-        graphql_request(latest_query, query_variables, debugging)
+        graphql_request(latest_query, variables=query_variables, gql_debugging=update_suwayomi_debugging)
 
-    if operation == "library":
+    if operation == "category":
         # Mutation to trigger the update once
         query = """
-        mutation TriggerGlobalUpdate($categoryId: Int!) {
+        mutation TriggerCategoryUpdate($categoryId: Int!) {
           updateLibrary(input: { categories: [$categoryId] }) {
             updateStatus {
               jobsInfo {
@@ -622,7 +630,7 @@ def update_suwayomi(operation: str, category_id, debugging: bool = False):
         }
         """
         query_variables = {"categoryId": category_id}
-        graphql_request(query, query_variables, debugging)
+        graphql_request(query, variables=query_variables, gql_debugging=update_suwayomi_debugging)
 
     if operation == "status":
         # Query to check the status repeatedly
@@ -639,21 +647,22 @@ def update_suwayomi(operation: str, category_id, debugging: bool = False):
           }
         }
         """
-        result = graphql_request(query, debugging=debugging)
+        result = graphql_request(query, gql_debugging=update_suwayomi_debugging)
         return result
 
-def populate_suwayomi(category_id: int, attempt: int):
+def populate_suwayomi(category_id: int, attempt: int, update_library: bool = True):
     log_clarification()
-    log(f"Suwayomi Update Triggered. Waiting for completion...", "warning")
+    log(f"Suwayomi Update Triggered. Waiting for completion...")
     
     wait_time = SUWAYOMI_POPULATION_TIME
 
     try:
-        # Fetch all mangas in the category update
-        update_suwayomi("category", category_id, debugging=False)
+        # Load category data
+        update_suwayomi("category browse", category_id, update_suwayomi_debugging=False)
         
         # Trigger the global update
-        update_suwayomi("library", category_id, debugging=False)
+        if update_library:
+            update_suwayomi("category", category_id, update_suwayomi_debugging=False)
 
         # Initialise progress bar
         pbar = tqdm(total=0, desc=f"Suwayomi Update (Attempt {attempt}/{orchestrator.max_retries})", unit="job", dynamic_ncols=True)
@@ -661,7 +670,7 @@ def populate_suwayomi(category_id: int, attempt: int):
         total_jobs = None
 
         while True:
-            result = update_suwayomi("status", category_id, debugging=False) # NOTE: DEBUGGING
+            result = update_suwayomi("status", category_id, update_suwayomi_debugging=True) # NOTE: DEBUGGING
             
             # Wait BEFORE checking status to avoid exiting early.
             time.sleep(wait_time)
@@ -740,7 +749,7 @@ def add_mangas_to_suwayomi(ids: list[int], category_id: int):
       }
     }
     """
-    result = graphql_request(mutation, {"ids": ids}) 
+    result = graphql_request(mutation, variables={"ids": ids}) 
     #log(f"GraphQL: updateMangas result: {result}", "debug")
     logger.info(f"GraphQL: Updated {len(ids)} mangas as 'In Library'.")
     
@@ -754,7 +763,7 @@ def add_mangas_to_suwayomi(ids: list[int], category_id: int):
       }
     }
     """
-    result = graphql_request(mutation, {"ids": ids, "categoryId": category_id})
+    result = graphql_request(mutation, variables={"ids": ids, "categoryId": category_id})
     #log(f"GraphQL: updateMangasCategories result: {result}", "debug")
     logger.info(f"GraphQL: Added {len(ids)} mangas to category {category_id}.")
     
@@ -781,7 +790,7 @@ def fetch_creators_suwayomi_metadata(creator_name: str):
       }
     }
     """
-    result = graphql_request(query, {"title": creator_name})
+    result = graphql_request(query, variables={"title": creator_name})
     if not result:
         return []
     return result.get("data", {}).get("mangas", {}).get("nodes", [])
@@ -809,7 +818,7 @@ def update_creator_manga(meta):
     Also attempt to immediately add the creator's manga to Suwayomi using its ID.
     """
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
         
     log_clarification("debug")
     
@@ -944,7 +953,7 @@ def update_creator_manga(meta):
     else:
         log(f"[DRY RUN] Would update manga cover for creators: {creators}", "debug")
 
-def process_deferred_creators():
+def process_deferred_creators(populate: bool = True):
     """
     Adds deferred creators to library and updates their category.
     Ensures only existing local creator folders are added.
@@ -952,7 +961,7 @@ def process_deferred_creators():
     Cleans up creators_metadata.json so successful creators are removed from deferred creators.
     """
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     process_creators_attempt = 1
     
@@ -962,7 +971,7 @@ def process_deferred_creators():
         log_clarification()
         logger.info(f"Processing creators (attempt {process_creators_attempt}/{orchestrator.max_retries})...")
         
-        populate_suwayomi(CATEGORY_ID, process_creators_attempt) # Update Suwayomi category first
+        populate_suwayomi(CATEGORY_ID, process_creators_attempt, update_library=populate) # Update Suwayomi category first
 
         # ----------------------------
         # Add mangas not yet in library
@@ -977,7 +986,7 @@ def process_deferred_creators():
         }
         }
         """
-        result = graphql_request(query, {"sourceId": LOCAL_SOURCE_ID})
+        result = graphql_request(query, variables={"sourceId": LOCAL_SOURCE_ID})
         nodes = result.get("data", {}).get("mangas", {}).get("nodes", []) if result else []
 
         new_ids = []
@@ -1039,7 +1048,7 @@ def process_deferred_creators():
                 still_deferred.add(creator_name)
                 continue
 
-            result = graphql_request(query, {"creatorName": creator_name})
+            result = graphql_request(query, variables={"creatorName": creator_name})
             mangas = result.get("data", {}).get("mangas", {}).get("nodes", []) if result else []
 
             if not mangas:
@@ -1086,7 +1095,7 @@ def download_images_hook(gallery, page, urls, path, downloader_session, pbar=Non
     Updates tqdm progress bar with current creator.
     """
 
-    fetch_env_vars()  # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
 
     if not urls:
         logger.warning(f"Gallery {gallery}: Page {page}: No URLs, skipping")
@@ -1134,7 +1143,7 @@ def download_images_hook(gallery, page, urls, path, downloader_session, pbar=Non
                     return True
 
                 except Exception as e:
-                    wait = dynamic_sleep("gallery", attempt=attempt)
+                    wait = dynamic_sleep("image", attempt=attempt)
                     log_clarification()
                     logger.warning(
                         f"Gallery {gallery}: Page {page}: Mirror {url}, attempt {attempt} failed: {e}, retrying in {wait:.2f}s"
@@ -1169,7 +1178,7 @@ def download_images_hook(gallery, page, urls, path, downloader_session, pbar=Non
 
 # Hook for pre-batch functionality. Use active_extension.pre_batch_hook(ARGS) in downloader.
 def pre_batch_hook(gallery_list):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Pre-batch Hook Inactive.")
@@ -1188,7 +1197,7 @@ def pre_batch_hook(gallery_list):
 
 # Hook for functionality before a gallery download. Use active_extension.pre_gallery_download_hook(ARGS) in downloader.
 def pre_gallery_download_hook(gallery_id):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Pre-download Hook Inactive.")
@@ -1198,7 +1207,7 @@ def pre_gallery_download_hook(gallery_id):
 
 # Hook for functionality during a gallery download. Use active_extension.during_gallery_download_hook(ARGS) in downloader.
 def during_gallery_download_hook(gallery_id):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: During-download Hook Inactive.")
@@ -1209,7 +1218,7 @@ def during_gallery_download_hook(gallery_id):
 
 # Hook for functionality after a completed gallery download. Use active_extension.after_completed_gallery_download_hook(ARGS) in downloader.
 def after_completed_gallery_download_hook(meta: dict, gallery_id):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Post-download Hook Inactive.")
@@ -1228,13 +1237,10 @@ def after_completed_gallery_download_hook(meta: dict, gallery_id):
 # Hook for cleaning after downloads
 def cleanup_hook():
     clean_directories(True) # Clean up the download folder / directories
-        
-    # Add all creators to Suwayomi
-    process_deferred_creators()
 
 # Hook for post-batch functionality. Use active_extension.post_batch_hook(ARGS) in downloader.
 def post_batch_hook(current_batch_number: int, total_batch_numbers: int):
-    fetch_env_vars()  # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Post-batch Hook Inactive.")
@@ -1243,15 +1249,32 @@ def post_batch_hook(current_batch_number: int, total_batch_numbers: int):
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Post-batch Hook Called.", "debug")
 
-    # --- Run if current batch hits interval or last batch ---
-    interval = max(1, round(RUNS_PER_X_BATCHES * total_batch_numbers / EVERY_X_BATCHES))
-    is_last_batch = current_batch_number == total_batch_numbers
-    if (current_batch_number % interval == 0) or is_last_batch:
-        cleanup_hook() # Call the cleanup hook     
+    def _should_run_post_batch():
+        # --- If Total Batches higher than MAX_X_BATCHES, do not run ---
+        if total_batch_numbers > MAX_X_BATCHES:
+            return False
+        
+        # --- Calculate when to trigger cleanup ---
+        interval = max(1, round(RUNS_PER_X_BATCHES * total_batch_numbers / EVERY_X_BATCHES))
+        is_last_batch = current_batch_number == total_batch_numbers
+        
+        # --- Only run if conditions are met ---
+        return (
+            not orchestrator.skip_post_batch # If NOT skipping post batch
+            and not orchestrator.archiving # If NOT in archival mode
+            and not is_last_batch # If not last batch
+            and (current_batch_number % interval == 0) # If current batch hits interval
+        )
+    
+    if _should_run_post_batch():
+        cleanup_hook() # Call the cleanup hook
+        
+        # Add all creators to Suwayomi
+        process_deferred_creators(populate=False)
 
 # Hook for post-run functionality. Use active_extension.post_run_hook(ARGS) in downloader.
 def post_run_hook():
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Post-run Hook Inactive.")
@@ -1260,12 +1283,15 @@ def post_run_hook():
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Post-run Hook Called.", "debug")
     
-    if orchestrator.skip_post_run == True:
+    if orchestrator.skip_post_run:
         log_clarification("debug")
         log(f"{EXTENSION_REFERRER}: Post-run Hook Skipped.", "debug")
     else:
         cleanup_hook() # Call the cleanup hook
         
+        # Add all creators to Suwayomi
+        process_deferred_creators(populate=True)
+                
         # Update Suwayomi category at end
         log_clarification()
         log("Please update the library manually and / or run a small download to reflect any changes.")

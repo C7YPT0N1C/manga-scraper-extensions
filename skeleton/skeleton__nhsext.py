@@ -44,6 +44,7 @@ SUBFOLDER_STRUCTURE = ["creator", "title"] # SUBDIR_1, SUBDIR_2, etc
 
 # Used to optionally run stuff in hooks (for example, cleaning the download directory) roughly "RUNS_PER_X_BATCHES" times every "EVERY_X_BATCHES" batches.
 # Increase this if the operations in your post batch / run hooks get increasingly demanding the larger the library is.
+MAX_X_BATCHES = 1000
 EVERY_X_BATCHES = 5
 RUNS_PER_X_BATCHES = 2
 
@@ -64,7 +65,7 @@ def pre_run_hook():
     logger.debug(f"{EXTENSION_REFERRER}: Ready.")
     log(f"{EXTENSION_REFERRER}: Debugging started.", "debug")
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     update_env("EXTENSION_DOWNLOAD_PATH", DEDICATED_DOWNLOAD_PATH) # Update download path in env
     
     if orchestrator.dry_run:
@@ -77,7 +78,7 @@ def pre_run_hook():
         logger.error(f"{EXTENSION_REFERRER}: Failed to create download path '{DEDICATED_DOWNLOAD_PATH}': {e}")
 
 def return_gallery_metas(meta):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     artists = get_meta_tags(f"{EXTENSION_REFERRER}: Return_gallery_metas", meta, "artist")
     groups = get_meta_tags(f"{EXTENSION_REFERRER}: Return_gallery_metas", meta, "group")
@@ -104,7 +105,7 @@ def install_extension():
     
     global DEDICATED_DOWNLOAD_PATH, EXTENSION_INSTALL_PATH
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
 
     if not DEDICATED_DOWNLOAD_PATH:
         # Fallback in case manifest didn't define it
@@ -133,7 +134,7 @@ def uninstall_extension():
     
     global DEDICATED_DOWNLOAD_PATH, EXTENSION_INSTALL_PATH
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] Would uninstall extension and remove paths: {EXTENSION_INSTALL_PATH}, {DEDICATED_DOWNLOAD_PATH}")
@@ -162,7 +163,7 @@ def test_hook():
     Call this function at the start of any function that uses any these variables to ensure they are up to date.
     """
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Test Hook Called.", "debug")
@@ -171,7 +172,7 @@ def test_hook():
 def clean_directories(RemoveEmptyArtistFolder: bool = True):
     global DEDICATED_DOWNLOAD_PATH
     
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     log_clarification("debug")
 
@@ -238,7 +239,7 @@ def download_images_hook(gallery, page, urls, path, downloader_session, pbar=Non
     Updates tqdm progress bar with current creator.
     """
 
-    fetch_env_vars()  # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
 
     if not urls:
         logger.warning(f"Gallery {gallery}: Page {page}: No URLs, skipping")
@@ -286,7 +287,7 @@ def download_images_hook(gallery, page, urls, path, downloader_session, pbar=Non
                     return True
 
                 except Exception as e:
-                    wait = dynamic_sleep("gallery", attempt=attempt)
+                    wait = dynamic_sleep("image", attempt=attempt)
                     log_clarification()
                     logger.warning(
                         f"Gallery {gallery}: Page {page}: Mirror {url}, attempt {attempt} failed: {e}, retrying in {wait:.2f}s"
@@ -321,7 +322,7 @@ def download_images_hook(gallery, page, urls, path, downloader_session, pbar=Non
 
 # Hook for pre-batch functionality. Use active_extension.pre_batch_hook(ARGS) in downloader.
 def pre_batch_hook(gallery_list):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Pre-batch Hook Inactive.")
@@ -337,7 +338,7 @@ def pre_batch_hook(gallery_list):
 
 # Hook for functionality before a gallery download. Use active_extension.pre_gallery_download_hook(ARGS) in downloader.
 def pre_gallery_download_hook(gallery_id):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Pre-download Hook Inactive.")
@@ -350,7 +351,7 @@ def pre_gallery_download_hook(gallery_id):
 
 # Hook for functionality during a gallery download. Use active_extension.during_gallery_download_hook(ARGS) in downloader.
 def during_gallery_download_hook(gallery_id):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: During-download Hook Inactive.")
@@ -364,7 +365,7 @@ def during_gallery_download_hook(gallery_id):
 
 # Hook for functionality after a completed gallery download. Use active_extension.after_completed_gallery_download_hook(ARGS) in downloader.
 def after_completed_gallery_download_hook(meta: dict, gallery_id):
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Post-download Hook Inactive.")
@@ -382,7 +383,7 @@ def cleanup_hook():
 
 # Hook for post-batch functionality. Use active_extension.post_batch_hook(ARGS) in downloader.
 def post_batch_hook(current_batch_number: int, total_batch_numbers: int):
-    fetch_env_vars()  # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Post-batch Hook Inactive.")
@@ -390,11 +391,25 @@ def post_batch_hook(current_batch_number: int, total_batch_numbers: int):
     
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Post-batch Hook Called.", "debug")
-
-    # --- Run if current batch hits interval or last batch ---
-    interval = max(1, round(RUNS_PER_X_BATCHES * total_batch_numbers / EVERY_X_BATCHES))
-    is_last_batch = current_batch_number == total_batch_numbers
-    if (current_batch_number % interval == 0) or is_last_batch:
+    
+    def _should_run_post_batch():
+        # --- If Total Batches higher than MAX_X_BATCHES, do not run ---
+        if total_batch_numbers > MAX_X_BATCHES:
+            return False
+        
+        # --- Calculate when to trigger cleanup ---
+        interval = max(1, round(RUNS_PER_X_BATCHES * total_batch_numbers / EVERY_X_BATCHES))
+        is_last_batch = current_batch_number == total_batch_numbers
+        
+        # --- Only run if conditions are met ---
+        return (
+            not orchestrator.skip_post_batch # If NOT skipping post batch
+            and not orchestrator.archiving # If NOT in archival mode
+            and not is_last_batch # If not last batch
+            and (current_batch_number % interval == 0) # If current batch hits interval
+        )
+    
+    if _should_run_post_batch():
         cleanup_hook() # Call the cleanup hook
     
     #log_clarification("debug")
@@ -402,7 +417,7 @@ def post_batch_hook(current_batch_number: int, total_batch_numbers: int):
 
 # Hook for post-run functionality. Use active_extension.post_run_hook(ARGS) in downloader.
 def post_run_hook():
-    fetch_env_vars() # Refresh env vars in case config changed.
+    orchestrator.refresh_globals()
     
     if orchestrator.dry_run:
         logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Post-run Hook Inactive.")
@@ -411,7 +426,7 @@ def post_run_hook():
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Post-run Hook Called.", "debug")
     
-    if orchestrator.skip_post_run == True:
+    if orchestrator.skip_post_run:
         log_clarification("debug")
         log(f"{EXTENSION_REFERRER}: Post-run Hook Skipped.", "debug")
     else:
