@@ -19,5 +19,5 @@ manga-scraper/
 │  ├─ __init__.py
 │  └─ skeleton__msext.py
 └─ master_manifest.json    # MASTER COPY OF ALL EXISTING EXTENSIONS. Pulled by the "extension_loader" module from "manga-scraper" and used to manage extensions. 
-└─ README.md    # Thhe thing you're reading right now.
+└─ README.md    # The thing you're reading right now.
 ```
