@@ -2,6 +2,11 @@
 
 Extensions for manga-scraper.
 
+## Output Format Behavior
+Extensions that post-process downloads (like skeleton and suwayomi) respect `GALLERY_FORMAT`:
+- `directory`: keep the original gallery folder.
+- `zip`/`cbz`: archive the gallery and remove the original folder after post-processing.
+
 ## Folder Structure
 "skeleton" is a template to make extensions.
 
