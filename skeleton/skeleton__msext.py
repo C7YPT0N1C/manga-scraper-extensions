@@ -13,6 +13,7 @@ from mangascraper.extensions.extension_manager import (
     find_latest_gallery_entry,
     parse_gallery_id,
     repair_creator_cover,
+    repair_covers_hook,
 )
 from mangascraper.core.api import (
     get_session,
@@ -147,30 +148,6 @@ def test_hook():
     
     log_clarification("debug")
     log(f"{EXTENSION_REFERRER}: Test Hook Called.", "debug")
-
-def repair_covers_hook():
-    orchestrator.refresh_globals()
-    if orchestrator.dry_run:
-        logger.info(f"[DRY RUN] {EXTENSION_REFERRER}: Repair covers hook inactive.")
-        return
-    if not DEDICATED_DOWNLOAD_PATH or not os.path.isdir(DEDICATED_DOWNLOAD_PATH):
-        return
-    repaired = 0
-    for name in os.listdir(DEDICATED_DOWNLOAD_PATH):
-        creator_folder = os.path.join(DEDICATED_DOWNLOAD_PATH, name)
-        if os.path.isdir(creator_folder):
-            before = any(
-                f.startswith("cover") and os.path.isfile(os.path.join(creator_folder, f))
-                for f in os.listdir(creator_folder)
-            )
-            repair_creator_cover(creator_folder)
-            after = any(
-                f.startswith("cover") and os.path.isfile(os.path.join(creator_folder, f))
-                for f in os.listdir(creator_folder)
-            )
-            if not before and after:
-                repaired += 1
-    logger.debug(f"{EXTENSION_REFERRER}: Cover update pass complete. Restored {repaired} cover(s).")
 
 ####################################################################################################################
 # CORE HOOKS (Please add to the functions, try not to change or remove anything)
@@ -353,9 +330,11 @@ def after_completed_gallery_download_hook(meta: dict, gallery_id):
 
             gallery_prefix = f"({gallery_id})"
             for search_folder in search_folders:
+                # Look for both directories and .cbz/.zip files
                 gallery_items = [
                     f for f in os.listdir(search_folder)
-                    if os.path.isdir(os.path.join(search_folder, f)) and f.startswith(gallery_prefix)
+                    if (os.path.isdir(os.path.join(search_folder, f)) or f.endswith('.cbz') or f.endswith('.zip'))
+                    and f.startswith(gallery_prefix)
                 ]
                 if not gallery_items:
                     continue
@@ -373,6 +352,9 @@ def after_completed_gallery_download_hook(meta: dict, gallery_id):
                             cover_gallery_name = gallery_items[0]
                             cover_ext = ext
                             cover_gallery_id = parse_gallery_id(cover_gallery_name)
+                elif gallery_items[0].endswith('.cbz') or gallery_items[0].endswith('.zip'):
+                    # If it's an archive, set the path for later use
+                    gallery_paths[creator_name] = gallery_path
                 else:
                     logger.debug(f"Gallery {gallery_items[0]} is already archived or not a directory, skipping")
 
@@ -436,6 +418,18 @@ def after_completed_gallery_download_hook(meta: dict, gallery_id):
             archive_ext = ".cbz" if gallery_format == "cbz" else ".zip"
             gallery_name = os.path.basename(gallery_path)
             expected_archive = os.path.join(creator_folder, f"{gallery_name}{archive_ext}")
+            # Archive the gallery if it's a directory and not already archived
+            if gallery_format in {"cbz", "zip"} and os.path.isdir(gallery_path):
+                import zipfile
+                archive_path = os.path.join(creator_folder, f"{gallery_name}{archive_ext}")
+                with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as archive:
+                    for root, _, files in os.walk(gallery_path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, gallery_path)
+                            archive.write(file_path, arcname)
+                logger.info(f"Archived gallery {gallery_path} to {archive_path}")
+            # Wait for the archive to exist
             if not os.path.exists(expected_archive):
                 max_checks = max(1, int(ARCHIVE_WAIT_SECONDS / ARCHIVE_POLL_INTERVAL))
                 for _ in range(max_checks):
@@ -452,19 +446,20 @@ def after_completed_gallery_download_hook(meta: dict, gallery_id):
                     )
                     continue
 
-            # Delete original gallery folder
-            try:
-                shutil.rmtree(gallery_path)
-                logger.debug(f"Deleted original gallery folder: {gallery_path}")
-            except Exception as e:
-                logger.error(f"Failed to delete gallery folder {gallery_path}: {e}")
+            # Delete original gallery folder if it was archived
+            if os.path.isdir(gallery_path) and os.path.exists(expected_archive):
+                try:
+                    shutil.rmtree(gallery_path)
+                    logger.debug(f"Deleted original gallery folder: {gallery_path}")
+                except Exception as e:
+                    logger.error(f"Failed to delete gallery folder {gallery_path}: {e}")
     
     except Exception as e:
         logger.error(f"Failed in post-download processing for Gallery {gallery_id}: {e}")
 
 # Hook for cleaning after downloads
 def cleanup_hook():
-    repair_covers_hook()
+    repair_covers_hook(DEDICATED_DOWNLOAD_PATH, referrer=EXTENSION_REFERRER)
     cleanup_download_tree(DEDICATED_DOWNLOAD_PATH, remove_empty_artist_folder=True)
 
 # Hook for post-batch functionality. Use active_extension.post_batch_hook(ARGS) in downloader.
